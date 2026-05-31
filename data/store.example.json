@@ -1,0 +1,18 @@
+{
+  "topics": [
+    {
+      "id": "deep-learning",
+      "name": "Deep Learning",
+      "query": "deep learning neural networks representation learning foundation models",
+      "color": "#2f6f73"
+    },
+    {
+      "id": "computational-neuroscience",
+      "name": "Computational Neuroscience",
+      "query": "computational neuroscience neural coding spiking neural networks dynamical systems",
+      "color": "#536fb8"
+    }
+  ],
+  "saved": [],
+  "dismissed": []
+}

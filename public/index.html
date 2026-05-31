@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaperSignal</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>PaperSignal</h1>
+            <p>Research signal radar</p>
+          </div>
+        </div>
+
+        <details class="panel sidebar-panel" open>
+          <summary>
+            <h2>Interests</h2>
+          </summary>
+          <div class="panel-head panel-tools">
+            <span>Tracked topics</span>
+            <button id="refreshButton" class="icon-button" type="button" title="Refresh papers" aria-label="Refresh papers">↻</button>
+          </div>
+          <div id="topicList" class="topic-list"></div>
+        </details>
+
+        <details class="panel sidebar-panel" open>
+          <summary><h2>Add Topic</h2></summary>
+          <form id="topicForm" class="topic-form">
+            <label>
+              <span>Name</span>
+              <input name="name" type="text" placeholder="e.g. Neural decoding" autocomplete="off" />
+            </label>
+            <label>
+              <span>Search query optional</span>
+              <textarea
+                name="query"
+                rows="3"
+                placeholder="e.g. computational neuroscience neural coding spiking neural networks"
+              ></textarea>
+              <small class="field-help">Leave blank to search by the topic name. Add related terms to broaden results.</small>
+            </label>
+            <button type="submit">Add topic</button>
+          </form>
+        </details>
+
+      </aside>
+
+      <section class="main-view">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Research intelligence</p>
+            <h2>Your Research Radar</h2>
+            <p id="activeTopicsLabel" class="active-topics-label">Tracking selected interests</p>
+          </div>
+          <div class="controls">
+            <label class="select-label">
+              <span>Window</span>
+              <select id="dayWindow">
+                <option value="30" selected>30 days</option>
+                <option value="90">90 days</option>
+                <option value="180">180 days</option>
+                <option value="365">1 year</option>
+                <option value="all">All time</option>
+              </select>
+            </label>
+            <div class="segmented" role="tablist" aria-label="Paper view">
+              <button class="active" type="button" data-view="latest">Latest</button>
+              <button type="button" data-view="classic">Classics</button>
+              <button type="button" data-view="saved">Saved</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="briefing-area">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Priority briefing</p>
+              <h2>Read These First</h2>
+            </div>
+            <p>Highest impact matches and selected current signals.</p>
+          </div>
+          <div class="briefing-grid">
+            <section class="briefing-column">
+              <div class="subsection-head">
+                <h3>Top Papers</h3>
+                <span>Ranked by impact</span>
+              </div>
+              <div id="featuredPapers" class="featured-papers"></div>
+              <button id="seeMorePapersButton" class="see-more-button" type="button">
+                See more papers <span aria-hidden="true">↓</span>
+              </button>
+            </section>
+            <section class="briefing-column">
+              <div class="subsection-head">
+                <h3>Today</h3>
+                <span id="featuredNewsScope">Academia + industry</span>
+              </div>
+              <div id="featuredNews" class="featured-news"></div>
+              <button id="seeMoreNewsButton" class="see-more-button" type="button">
+                See more news <span aria-hidden="true">↓</span>
+              </button>
+            </section>
+          </div>
+        </section>
+
+        <section class="intelligence-strip">
+          <div>
+            <span class="metric" id="paperCount">0</span>
+            <span class="metric-label">significant latest papers</span>
+          </div>
+          <div>
+            <span class="metric" id="newsCount">0</span>
+            <span class="metric-label">today signals</span>
+          </div>
+          <div>
+            <span class="metric" id="sourceStatus">...</span>
+            <span class="metric-label">data source</span>
+          </div>
+        </section>
+
+        <details class="secondary-area">
+          <summary>
+            <strong>Current Trend Map</strong>
+            <span id="trendCount">0</span>
+            <span>signals</span>
+          </summary>
+          <div class="section-head">
+            <p id="updatedAt">Waiting for first scan</p>
+          </div>
+          <div id="trendMap" class="trend-map" aria-label="Trend keywords"></div>
+        </details>
+
+        <details id="allTrendNews" class="news-area secondary-area">
+          <summary>
+            <strong>All Trend News</strong>
+            <span>Browse today's coverage</span>
+          </summary>
+          <div class="section-head">
+            <p id="newsUpdatedAt">Academia, industry, and discussion signals from the last day.</p>
+            <button id="newsRefreshButton" class="icon-button" type="button" title="Refresh trend news" aria-label="Refresh trend news">↻</button>
+          </div>
+          <div class="news-tabs" aria-label="Trend news categories">
+            <button class="active" type="button" data-news-category="all">All</button>
+            <button type="button" data-news-category="academia">Academia</button>
+            <button type="button" data-news-category="industry">Industry</button>
+            <button type="button" data-news-category="discussion">Discussion</button>
+          </div>
+          <div id="newsList" class="news-list"></div>
+        </details>
+
+        <section id="allPapers" class="paper-area">
+          <div class="section-head">
+            <div>
+              <h2 id="paperViewTitle">Latest Paper Feed</h2>
+              <p id="paperViewSubtitle">Recent papers ranked by citation, relevance, venue, and abstract evidence.</p>
+            </div>
+            <input id="searchInput" type="search" placeholder="Filter by title, author, keyword..." />
+          </div>
+          <div id="paperList" class="paper-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <template id="topicTemplate">
+      <div class="topic-pill">
+        <label class="topic-select">
+          <input type="checkbox" checked />
+          <span class="swatch"></span>
+          <span class="topic-name"></span>
+        </label>
+        <button class="topic-remove" type="button" aria-label="Remove topic" title="Remove topic">×</button>
+      </div>
+    </template>
+
+    <template id="paperTemplate">
+      <article class="paper-card">
+        <div class="paper-score">
+          <strong></strong>
+          <span>score</span>
+        </div>
+        <div class="paper-main">
+          <div class="paper-meta"></div>
+          <h3></h3>
+          <p class="abstract"></p>
+          <p class="classic-note"></p>
+          <div class="signal-row"></div>
+          <div class="keyword-row"></div>
+          <div class="paper-actions">
+            <a target="_blank" rel="noreferrer">Open</a>
+            <button type="button">Save</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <template id="newsTemplate">
+      <article class="news-card">
+        <div class="news-category"></div>
+        <div>
+          <a target="_blank" rel="noreferrer"></a>
+          <span></span>
+        </div>
+      </article>
+    </template>
+
+    <template id="featuredPaperTemplate">
+      <article class="featured-paper">
+        <div class="featured-score">
+          <strong></strong>
+          <span>impact</span>
+        </div>
+        <div>
+          <a target="_blank" rel="noreferrer"></a>
+          <p></p>
+          <div class="featured-signal"></div>
+        </div>
+      </article>
+    </template>
+
+    <template id="featuredNewsTemplate">
+      <article class="featured-news-card">
+        <div class="news-category"></div>
+        <a target="_blank" rel="noreferrer"></a>
+        <span></span>
+      </article>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
