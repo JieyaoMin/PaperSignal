@@ -1,4 +1,18 @@
 {
+  "fields": [
+    {
+      "id": "ai",
+      "name": "AI",
+      "query": "artificial intelligence machine learning deep learning neural networks foundation models",
+      "color": "#536fb8"
+    },
+    {
+      "id": "electrical-engineering",
+      "name": "Electrical Engineering",
+      "query": "signal processing circuits EEG sensors neural engineering",
+      "color": "#7a4e8a"
+    }
+  ],
   "topics": [
     {
       "id": "deep-learning",

@@ -1,4 +1,6 @@
 const state = {
+  fields: [],
+  selectedFields: new Set(),
   topics: [],
   selectedTopics: new Set(),
   papers: [],
@@ -13,6 +15,8 @@ const state = {
   status: "loading"
 };
 
+const fieldList = document.querySelector("#fieldList");
+const fieldTemplate = document.querySelector("#fieldTemplate");
 const topicList = document.querySelector("#topicList");
 const topicTemplate = document.querySelector("#topicTemplate");
 const paperTemplate = document.querySelector("#paperTemplate");
@@ -39,6 +43,7 @@ const seeMoreNewsButton = document.querySelector("#seeMoreNewsButton");
 const allTrendNews = document.querySelector("#allTrendNews");
 const allPapers = document.querySelector("#allPapers");
 const searchInput = document.querySelector("#searchInput");
+const fieldForm = document.querySelector("#fieldForm");
 const topicForm = document.querySelector("#topicForm");
 const paperViewTitle = document.querySelector("#paperViewTitle");
 const paperViewSubtitle = document.querySelector("#paperViewSubtitle");
@@ -100,13 +105,51 @@ function renderTopics() {
   renderActiveTopicsLabel();
 }
 
+function renderFields() {
+  fieldList.replaceChildren();
+  if (!state.fields.length) {
+    fieldList.innerHTML = '<div class="empty-topics">No field lenses yet. Add a field below.</div>';
+    renderActiveTopicsLabel();
+    return;
+  }
+  for (const field of state.fields) {
+    const node = fieldTemplate.content.cloneNode(true);
+    const input = node.querySelector("input");
+    input.checked = state.selectedFields.has(field.id);
+    input.addEventListener("change", () => {
+      if (input.checked) state.selectedFields.add(field.id);
+      else state.selectedFields.delete(field.id);
+      renderActiveTopicsLabel();
+      loadDiscovery();
+    });
+    node.querySelector(".swatch").style.background = field.color;
+    node.querySelector(".topic-name").textContent = field.name;
+    const removeButton = node.querySelector(".topic-remove");
+    removeButton.setAttribute("aria-label", `Remove ${field.name}`);
+    removeButton.title = `Remove ${field.name}`;
+    removeButton.addEventListener("click", async () => {
+      await api(`/api/fields/${encodeURIComponent(field.id)}`, { method: "DELETE" });
+      state.fields = state.fields.filter((item) => item.id !== field.id);
+      state.selectedFields.delete(field.id);
+      renderFields();
+      await loadDiscovery();
+    });
+    fieldList.append(node);
+  }
+  renderActiveTopicsLabel();
+}
+
 function renderActiveTopicsLabel() {
   const activeNames = state.topics
     .filter((topic) => state.selectedTopics.has(topic.id))
     .map((topic) => topic.name);
+  const fieldNames = state.fields
+    .filter((field) => state.selectedFields.has(field.id))
+    .map((field) => field.name);
+  const fieldSuffix = fieldNames.length ? ` · Fields: ${fieldNames.join(" · ")}` : "";
   activeTopicsLabel.textContent = activeNames.length
-    ? `Tracking: ${activeNames.join(" · ")}`
-    : "Select at least one interest to track";
+    ? `Tracking: ${activeNames.join(" · ")}${fieldSuffix}`
+    : `Select at least one interest to track${fieldSuffix}`;
 }
 
 function renderTrends() {
@@ -230,11 +273,16 @@ function selectedTopicParam() {
   return [...state.selectedTopics].join(",");
 }
 
+function selectedFieldParam() {
+  return [...state.selectedFields].join(",");
+}
+
 async function fetchPaperDiscovery(windowValue) {
   const selected = selectedTopicParam();
   const minSignificance = 34;
+  const field = selectedFieldParam();
   return api(
-    `/api/discover?days=${windowValue}&minSignificance=${minSignificance}&topics=${encodeURIComponent(selected)}`
+    `/api/discover?days=${windowValue}&minSignificance=${minSignificance}&topics=${encodeURIComponent(selected)}&field=${encodeURIComponent(field)}`
   );
 }
 
@@ -343,6 +391,12 @@ async function loadTopics() {
   renderTopics();
 }
 
+async function loadFields() {
+  state.fields = await api("/api/fields");
+  state.selectedFields = new Set(state.fields.map((field) => field.id));
+  renderFields();
+}
+
 async function loadSaved() {
   state.saved = await api("/api/saved");
 }
@@ -369,7 +423,8 @@ async function loadLatestPapers(requestId = state.requestId) {
 
 async function loadTrendNews(requestId = state.requestId) {
   const selected = selectedTopicParam();
-  const payload = await api(`/api/trend-news?topics=${encodeURIComponent(selected)}`);
+  const field = selectedFieldParam();
+  const payload = await api(`/api/trend-news?topics=${encodeURIComponent(selected)}&field=${encodeURIComponent(field)}`);
   if (requestId !== state.requestId) return null;
   state.news = payload.items || [];
   newsCount.textContent = state.news.length;
@@ -446,6 +501,23 @@ topicForm.addEventListener("submit", async (event) => {
   loadDiscovery();
 });
 
+fieldForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(fieldForm);
+  const field = await api("/api/fields", {
+    method: "POST",
+    body: JSON.stringify({
+      name: form.get("name"),
+      query: form.get("query")
+    })
+  });
+  state.fields = [...state.fields.filter((item) => item.id !== field.id), field];
+  state.selectedFields.add(field.id);
+  fieldForm.reset();
+  renderFields();
+  loadDiscovery();
+});
+
 refreshButton.addEventListener("click", refreshLatestDefault);
 dayWindow.addEventListener("change", loadDiscovery);
 newsRefreshButton.addEventListener("click", loadTrendNews);
@@ -475,6 +547,7 @@ document.querySelectorAll(".segmented button").forEach((button) => {
   });
 });
 
+await loadFields();
 await loadTopics();
 await loadSaved();
 await loadClassics();

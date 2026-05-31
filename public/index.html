@@ -19,11 +19,41 @@
 
         <details class="panel sidebar-panel" open>
           <summary>
-            <h2>Interests</h2>
+            <h2>Fields</h2>
           </summary>
           <div class="panel-head panel-tools">
-            <span>Tracked topics</span>
+            <span>Domain lenses</span>
             <button id="refreshButton" class="icon-button" type="button" title="Refresh papers" aria-label="Refresh papers">↻</button>
+          </div>
+          <div id="fieldList" class="topic-list"></div>
+        </details>
+
+        <details class="panel sidebar-panel" open>
+          <summary><h2>Add Field</h2></summary>
+          <form id="fieldForm" class="topic-form">
+            <label>
+              <span>Name</span>
+              <input name="name" type="text" placeholder="e.g. Electrical Engineering" autocomplete="off" />
+            </label>
+            <label>
+              <span>Search query optional</span>
+              <textarea
+                name="query"
+                rows="3"
+                placeholder="e.g. signal processing circuits EEG neural engineering"
+              ></textarea>
+              <small class="field-help">Leave blank to search by the field name. Add related terms to narrow broad topics.</small>
+            </label>
+            <button type="submit">Add field</button>
+          </form>
+        </details>
+
+        <details class="panel sidebar-panel" open>
+          <summary>
+            <h2>Topics</h2>
+          </summary>
+          <div class="panel-head panel-tools">
+            <span>Research interests</span>
           </div>
           <div id="topicList" class="topic-list"></div>
         </details>
@@ -174,6 +204,17 @@
           <span class="topic-name"></span>
         </label>
         <button class="topic-remove" type="button" aria-label="Remove topic" title="Remove topic">×</button>
+      </div>
+    </template>
+
+    <template id="fieldTemplate">
+      <div class="topic-pill">
+        <label class="topic-select">
+          <input type="checkbox" checked />
+          <span class="swatch"></span>
+          <span class="topic-name"></span>
+        </label>
+        <button class="topic-remove" type="button" aria-label="Remove field" title="Remove field">×</button>
       </div>
     </template>
 

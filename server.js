@@ -373,13 +373,15 @@ const venueSignals = [
 async function ensureStore() {
   await mkdir(DATA_DIR, { recursive: true });
   if (!existsSync(STORE_FILE)) {
-    await writeStore({ topics: seedTopics, saved: [], dismissed: [] });
+    await writeStore({ fields: [], topics: seedTopics, saved: [], dismissed: [] });
   }
 }
 
 async function readStore() {
   await ensureStore();
-  return JSON.parse(await readFile(STORE_FILE, "utf8"));
+  const store = JSON.parse(await readFile(STORE_FILE, "utf8"));
+  store.fields = store.fields || [];
+  return store;
 }
 
 async function writeStore(store) {
@@ -426,6 +428,36 @@ function daysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return date.toISOString().slice(0, 10);
+}
+
+function slug(value) {
+  return normalizeText(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+function selectedFields(store, selected) {
+  return selected.length ? store.fields.filter((field) => selected.includes(field.id)) : [];
+}
+
+function fieldLensFromFields(fields) {
+  if (!fields.length) {
+    return { id: "all", label: "All fields", query: "", terms: [] };
+  }
+  const labels = fields.map((field) => field.name);
+  const queries = fields.map((field) => field.query || field.name);
+  return {
+    id: fields.map((field) => field.id).join(","),
+    label: labels.join(", "),
+    query: queries.join(" "),
+    terms: [...labels, ...queries.flatMap((query) => keywordList(query).slice(0, 8))]
+  };
+}
+
+function queryForField(topic, fieldLens) {
+  return [topic.query, fieldLens.query].filter(Boolean).join(" ");
+}
+
+function scoreTopicsForField(topicNames, fieldLens) {
+  return fieldLens.id === "all" ? topicNames : [...topicNames, fieldLens.label, ...fieldLens.terms];
 }
 
 function keywordList(text) {
@@ -533,10 +565,11 @@ function convertOpenAlexWork(work, topicNames, options = {}) {
   return applyScores(paper, topicNames, options);
 }
 
-async function fetchOpenAlex(topic, days) {
+async function fetchOpenAlex(topic, days, fieldLens) {
   const allTime = days === "all";
+  const scoreTopics = scoreTopicsForField([topic.name], fieldLens);
   const params = new URLSearchParams({
-    search: topic.query,
+    search: queryForField(topic, fieldLens),
     filter: allTime ? "type:article|preprint" : `from_publication_date:${daysAgo(days)},type:article|preprint`,
     sort: "cited_by_count:desc",
     per_page: "25",
@@ -550,13 +583,14 @@ async function fetchOpenAlex(topic, days) {
     throw new Error(`OpenAlex returned ${response.status}`);
   }
   const data = await response.json();
-  return (data.results || []).map((work) => convertOpenAlexWork(work, [topic.name], { allTime }));
+  return (data.results || []).map((work) => convertOpenAlexWork(work, scoreTopics, { allTime }));
 }
 
-async function fetchArxiv(topic, days) {
+async function fetchArxiv(topic, days, fieldLens) {
   const allTime = days === "all";
+  const scoreTopics = scoreTopicsForField([topic.name], fieldLens);
   const params = new URLSearchParams({
-    search_query: `all:${topic.query}`,
+    search_query: `all:${queryForField(topic, fieldLens)}`,
     start: "0",
     max_results: "20",
     sortBy: allTime ? "relevance" : "submittedDate",
@@ -593,7 +627,7 @@ async function fetchArxiv(topic, days) {
         authors,
         url: field("id"),
         doi: "",
-        topics: [topic.name],
+        topics: scoreTopics,
         source: "arXiv",
         keywords: keywordList(`${field("title")} ${field("summary")}`).slice(0, 8)
       };
@@ -601,18 +635,18 @@ async function fetchArxiv(topic, days) {
     })
     .filter((paper) => paper.title && paper.url)
     .filter((paper) => !cutoff || new Date(paper.publicationDate) >= cutoff)
-    .map((paper) => applyScores(paper, [topic.name], { allTime }));
+    .map((paper) => applyScores(paper, scoreTopics, { allTime }));
 }
 
-async function fetchPaperGroups(topics, days) {
-  const primary = await Promise.allSettled(topics.map((topic) => fetchOpenAlex(topic, days)));
+async function fetchPaperGroups(topics, days, fieldLens) {
+  const primary = await Promise.allSettled(topics.map((topic) => fetchOpenAlex(topic, days, fieldLens)));
   const groups = primary.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   const errors = primary.flatMap((result) => (result.status === "rejected" ? [result.reason.message] : []));
   const openAlexCount = groups.flat().length;
   const providers = new Set(openAlexCount ? ["OpenAlex"] : []);
 
   if (errors.length || openAlexCount < Math.max(3, topics.length * 3)) {
-    const fallback = await Promise.allSettled(topics.map((topic) => fetchArxiv(topic, days)));
+    const fallback = await Promise.allSettled(topics.map((topic) => fetchArxiv(topic, days, fieldLens)));
     const arxivGroups = fallback.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
     const arxivCount = arxivGroups.flat().length;
     if (arxivCount) {
@@ -768,9 +802,10 @@ function classicsForTopics(topicNames) {
     }));
 }
 
-async function fetchHackerNewsDiscussion(topics, days) {
+async function fetchHackerNewsDiscussion(topics, days, fieldLens) {
   const since = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
-  const topicQuery = topics.map((topic) => topic.name).join(" OR ") || "AI neuroscience BCI data science";
+  const fieldTerms = fieldLens.id === "all" ? [] : [fieldLens.label, ...fieldLens.terms.slice(0, 3)];
+  const topicQuery = [...topics.map((topic) => topic.name), ...fieldTerms].join(" OR ") || "AI neuroscience BCI data science";
   const params = new URLSearchParams({
     query: topicQuery,
     tags: "story",
@@ -795,13 +830,14 @@ async function fetchHackerNewsDiscussion(topics, days) {
   }));
 }
 
-function newsTopicFocus(topics) {
-  const phrases = topics.map((topic) => `"${topic.name}"`);
+function newsTopicFocus(topics, fieldLens) {
+  const fieldTerms = fieldLens.id === "all" ? [] : [fieldLens.label, ...fieldLens.terms.slice(0, 3)];
+  const phrases = [...topics.map((topic) => topic.name), ...fieldTerms].map((term) => `"${term}"`);
   return phrases.length ? `(${phrases.join(" OR ")})` : '("artificial intelligence" OR neuroscience)';
 }
 
-async function fetchTrendNews(topics, days) {
-  const focus = newsTopicFocus(topics);
+async function fetchTrendNews(topics, days, fieldLens) {
+  const focus = newsTopicFocus(topics, fieldLens);
   const academiaQuery =
     `${focus} (research OR university OR paper OR lab) -stock -investor -crypto when:${days}d`;
   const industryQuery =
@@ -809,7 +845,7 @@ async function fetchTrendNews(topics, days) {
   const [academia, industry, discussion] = await Promise.all([
     fetchGoogleNews("academia", academiaQuery),
     fetchGoogleNews("industry", industryQuery),
-    fetchHackerNewsDiscussion(topics, days)
+    fetchHackerNewsDiscussion(topics, days, fieldLens)
   ]);
   const ordered = [...academia, ...industry, ...discussion]
     .filter((item) => item.title && item.url)
@@ -818,12 +854,12 @@ async function fetchTrendNews(topics, days) {
   return dedupeNews(ordered).slice(0, 18);
 }
 
-async function trendNews(topics) {
-  const today = await fetchTrendNews(topics, 1);
+async function trendNews(topics, fieldLens) {
+  const today = await fetchTrendNews(topics, 1, fieldLens);
   if (today.length) {
     return { items: today, days: 1 };
   }
-  return { items: await fetchTrendNews(topics, 7), days: 7 };
+  return { items: await fetchTrendNews(topics, 7, fieldLens), days: 7 };
 }
 
 function mergePapers(paperGroups, topicNames, minSignificance, options = {}) {
@@ -884,6 +920,10 @@ async function discover(req, res, url) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+  const selectedFieldIds = (url.searchParams.get("field") || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const dayWindow = url.searchParams.get("days") || "90";
   const days = dayWindow === "all" ? "all" : Number.parseInt(dayWindow, 10);
   const allTime = days === "all";
@@ -891,34 +931,39 @@ async function discover(req, res, url) {
   const topics = selected.length
     ? store.topics.filter((topic) => selected.includes(topic.id))
     : store.topics;
+  const fields = selectedFields(store, selectedFieldIds);
+  const fieldLens = fieldLensFromFields(fields);
   const topicNames = topics.map((topic) => topic.name);
+  const scoreTopicNames = scoreTopicsForField(topicNames, fieldLens);
 
   try {
-    const sourceResult = await fetchPaperGroups(topics, days);
+    const sourceResult = await fetchPaperGroups(topics, days, fieldLens);
     const groups = [...sourceResult.groups];
     if (allTime) {
-      groups.unshift(classicsForTopics(topicNames));
+      groups.unshift(classicsForTopics(scoreTopicNames));
     }
-    const result = mergePapers(groups, topicNames, minSignificance, { allTime });
+    const result = mergePapers(groups, scoreTopicNames, minSignificance, { allTime });
     sendJson(res, 200, {
       status: "live",
       updatedAt: new Date().toISOString(),
       minSignificance,
       rankingMode: allTime ? "all-time" : result.rankingMode,
       dayWindow,
+      field: { id: fieldLens.id, label: fieldLens.label },
       providers: allTime ? ["Classic", ...sourceResult.providers] : sourceResult.providers,
       topics,
       papers: result.papers,
       trends: computeTrends(result.papers)
     });
   } catch (error) {
-    const fallback = samplePapers.map((paper) => applyScores(paper, topicNames));
+    const fallback = samplePapers.map((paper) => applyScores(paper, scoreTopicNames));
     sendJson(res, 200, {
       status: "sample",
       message: error.message,
       updatedAt: new Date().toISOString(),
       minSignificance,
       rankingMode: "sample",
+      field: { id: fieldLens.id, label: fieldLens.label },
       topics,
       papers: fallback,
       trends: computeTrends(fallback)
@@ -952,6 +997,44 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, store.topics);
       return;
     }
+    if (url.pathname === "/api/fields" && req.method === "GET") {
+      const store = await readStore();
+      sendJson(res, 200, store.fields);
+      return;
+    }
+    if (url.pathname === "/api/fields" && req.method === "POST") {
+      const store = await readStore();
+      const body = await readBody(req);
+      const name = normalizeText(body.name);
+      const query = normalizeText(body.query || body.name);
+      if (!name || !query) {
+        sendJson(res, 400, { error: "Field name and query are required." });
+        return;
+      }
+      const field = {
+        id: slug(name),
+        name,
+        query,
+        color: body.color || "#536fb8"
+      };
+      store.fields = [...store.fields.filter((item) => item.id !== field.id), field];
+      await writeStore(store);
+      sendJson(res, 201, field);
+      return;
+    }
+    if (url.pathname.startsWith("/api/fields/") && req.method === "DELETE") {
+      const store = await readStore();
+      const fieldId = decodeURIComponent(url.pathname.slice("/api/fields/".length));
+      const existing = store.fields.find((field) => field.id === fieldId);
+      if (!existing) {
+        sendJson(res, 404, { error: "Field not found." });
+        return;
+      }
+      store.fields = store.fields.filter((field) => field.id !== fieldId);
+      await writeStore(store);
+      sendJson(res, 200, existing);
+      return;
+    }
     if (url.pathname === "/api/topics" && req.method === "POST") {
       const store = await readStore();
       const body = await readBody(req);
@@ -962,7 +1045,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const topic = {
-        id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
+        id: slug(name),
         name,
         query,
         color: body.color || "#2f6f73"
@@ -1001,14 +1084,20 @@ const server = createServer(async (req, res) => {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean);
+        const selectedFieldIds = (url.searchParams.get("field") || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
         const topics = selected.length
           ? store.topics.filter((topic) => selected.includes(topic.id))
           : store.topics;
-        const result = await trendNews(topics);
+        const fieldLens = fieldLensFromFields(selectedFields(store, selectedFieldIds));
+        const result = await trendNews(topics, fieldLens);
         sendJson(res, 200, {
           status: "live",
           updatedAt: new Date().toISOString(),
           topics: topics.map((topic) => topic.name),
+          field: { id: fieldLens.id, label: fieldLens.label },
           days: result.days,
           items: result.items
         });

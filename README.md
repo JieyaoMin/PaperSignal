@@ -21,6 +21,7 @@ http://127.0.0.1:4173
 - Loads your research interests from `data/store.json`.
 - Fetches recent works from OpenAlex by default.
 - Automatically falls back to arXiv when OpenAlex fails or returns too few live results.
+- Lets you add free-text field lenses, such as AI, Electrical Engineering, or Psychology, to narrow broad topics.
 - Filters recent works by significance before ranking them.
 - Scores significance with citation signal, topic relevance, venue signal, and available abstract evidence.
 - Extracts trend keywords from the current result set.
