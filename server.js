@@ -443,7 +443,7 @@ function fieldLensFromFields(fields) {
     return { id: "all", label: "All fields", query: "", terms: [] };
   }
   const labels = fields.map((field) => field.name);
-  const queries = fields.map((field) => field.query || field.name);
+  const queries = fields.map((field) => expandFieldQuery(field.query || field.name));
   return {
     id: fields.map((field) => field.id).join(","),
     label: labels.join(", "),
@@ -456,8 +456,58 @@ function queryForField(topic, fieldLens) {
   return [topic.query, fieldLens.query].filter(Boolean).join(" ");
 }
 
+function expandFieldQuery(query) {
+  const normalized = normalizeText(query);
+  const lower = normalized.toLowerCase();
+  if (/\bstomotology\b|\bstomatology\b|\bdentistry\b|\bdental\b|\bendodont/.test(lower)) {
+    return "dentistry dental endodontics endodontic oral medicine";
+  }
+  return normalized;
+}
+
 function scoreTopicsForField(topicNames, fieldLens) {
   return fieldLens.id === "all" ? topicNames : [...topicNames, fieldLens.label, ...fieldLens.terms];
+}
+
+function meaningfulTerms(text) {
+  return keywordList(text).filter((term) => term.length > 3);
+}
+
+function exactPhrases(text) {
+  const normalized = normalizeText(text).toLowerCase();
+  const chunks = [normalized];
+  if (normalized.includes("root canal")) {
+    chunks.push("root canal", "endodontic", "endodontics");
+  }
+  return [...new Set(chunks.filter((chunk) => chunk.length > 3))];
+}
+
+function textMatchesFocus(text, focusText, options = {}) {
+  const normalized = normalizeText(text).toLowerCase();
+  const phrases = exactPhrases(focusText);
+  if (phrases.some((phrase) => normalized.includes(phrase))) {
+    return true;
+  }
+  const terms = meaningfulTerms(focusText);
+  if (!terms.length) {
+    return true;
+  }
+  const hits = terms.filter((term) => normalized.includes(term)).length;
+  return hits >= Math.min(options.minHits || 2, terms.length);
+}
+
+function paperMatchesSelection(paper, topics, fieldLens) {
+  const text = [
+    paper.title,
+    paper.abstract,
+    paper.venue,
+    (paper.keywords || []).join(" "),
+    (paper.openAlexTerms || []).join(" ")
+  ].join(" ");
+  const topicMatch = topics.some((topic) => textMatchesFocus(text, `${topic.name} ${topic.query}`));
+  const fieldMatch =
+    fieldLens.id === "all" || textMatchesFocus(text, `${fieldLens.label} ${fieldLens.query}`, { minHits: 1 });
+  return topicMatch && fieldMatch;
 }
 
 function keywordList(text) {
@@ -544,6 +594,18 @@ function convertOpenAlexWork(work, topicNames, options = {}) {
         .map((entry) => entry[1])
         .join(" ")
     : "";
+  const openAlexTerms = [
+    work.primary_topic?.display_name,
+    work.primary_topic?.field?.display_name,
+    work.primary_topic?.subfield?.display_name,
+    ...(work.topics || []).flatMap((topic) => [
+      topic.display_name,
+      topic.field?.display_name,
+      topic.subfield?.display_name
+    ]),
+    ...(work.concepts || []).map((concept) => concept.display_name),
+    ...(work.keywords || []).map((keyword) => keyword.display_name)
+  ].filter(Boolean);
   const paper = {
     id: work.id || work.doi || work.display_name,
     title: work.display_name || "Untitled work",
@@ -560,7 +622,8 @@ function convertOpenAlexWork(work, topicNames, options = {}) {
     doi: work.doi || "",
     topics: topicNames,
     source: "OpenAlex",
-    keywords: keywordList(`${work.display_name} ${abstract}`).slice(0, 8)
+    keywords: [...new Set([...keywordList(`${work.display_name} ${abstract}`).slice(0, 8), ...openAlexTerms.slice(0, 6)])],
+    openAlexTerms
   };
   return applyScores(paper, topicNames, options);
 }
@@ -589,8 +652,10 @@ async function fetchOpenAlex(topic, days, fieldLens) {
 async function fetchArxiv(topic, days, fieldLens) {
   const allTime = days === "all";
   const scoreTopics = scoreTopicsForField([topic.name], fieldLens);
+  const topicQuery = `all:"${queryForArxiv(topic.name || topic.query)}"`;
+  const fieldQuery = fieldLens.id === "all" ? "" : ` AND all:"${queryForArxiv(fieldLens.query || fieldLens.label)}"`;
   const params = new URLSearchParams({
-    search_query: `all:${queryForField(topic, fieldLens)}`,
+    search_query: `${topicQuery}${fieldQuery}`,
     start: "0",
     max_results: "20",
     sortBy: allTime ? "relevance" : "submittedDate",
@@ -638,16 +703,28 @@ async function fetchArxiv(topic, days, fieldLens) {
     .map((paper) => applyScores(paper, scoreTopics, { allTime }));
 }
 
+function queryForArxiv(value) {
+  return normalizeText(value).replace(/"/g, "");
+}
+
 async function fetchPaperGroups(topics, days, fieldLens) {
   const primary = await Promise.allSettled(topics.map((topic) => fetchOpenAlex(topic, days, fieldLens)));
-  const groups = primary.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  const groups = primary.flatMap((result, index) =>
+    result.status === "fulfilled"
+      ? [result.value.filter((paper) => paperMatchesSelection(paper, [topics[index]], fieldLens))]
+      : []
+  );
   const errors = primary.flatMap((result) => (result.status === "rejected" ? [result.reason.message] : []));
   const openAlexCount = groups.flat().length;
   const providers = new Set(openAlexCount ? ["OpenAlex"] : []);
 
   if (errors.length || openAlexCount < Math.max(3, topics.length * 3)) {
     const fallback = await Promise.allSettled(topics.map((topic) => fetchArxiv(topic, days, fieldLens)));
-    const arxivGroups = fallback.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    const arxivGroups = fallback.flatMap((result, index) =>
+      result.status === "fulfilled"
+        ? [result.value.filter((paper) => paperMatchesSelection(paper, [topics[index]], fieldLens))]
+        : []
+    );
     const arxivCount = arxivGroups.flat().length;
     if (arxivCount) {
       groups.push(...arxivGroups);
@@ -766,9 +843,13 @@ function dedupeNews(items) {
 }
 
 function selectedTopicNames(store, selected) {
-  return selected.length
-    ? store.topics.filter((topic) => selected.includes(topic.id)).map((topic) => topic.name)
-    : store.topics.map((topic) => topic.name);
+  return selectedTopics(store, selected).map((topic) => topic.name);
+}
+
+function selectedTopics(store, selected) {
+  if (!selected.length) return store.topics;
+  const matches = store.topics.filter((topic) => selected.includes(topic.id));
+  return matches.length ? matches : store.topics;
 }
 
 function classicMatchesTopic(classicPaper, topicNames) {
@@ -805,9 +886,11 @@ function classicsForTopics(topicNames) {
 async function fetchHackerNewsDiscussion(topics, days, fieldLens) {
   const since = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
   const fieldTerms = fieldLens.id === "all" ? [] : [fieldLens.label, ...fieldLens.terms.slice(0, 3)];
-  const topicQuery = [...topics.map((topic) => topic.name), ...fieldTerms].join(" OR ") || "AI neuroscience BCI data science";
+  const topicQuery = [topics.map((topic) => topic.name).join(" "), fieldTerms.join(" ")]
+    .filter(Boolean)
+    .join(" ");
   const params = new URLSearchParams({
-    query: topicQuery,
+    query: topicQuery || "AI neuroscience BCI data science",
     tags: "story",
     numericFilters: `created_at_i>${since}`,
     hitsPerPage: "6"
@@ -831,12 +914,36 @@ async function fetchHackerNewsDiscussion(topics, days, fieldLens) {
 }
 
 function newsTopicFocus(topics, fieldLens) {
+  const topicPhrases = topics.map((topic) => `"${topic.name}"`);
+  const topicFocus = topicPhrases.length ? `(${topicPhrases.join(" OR ")})` : '("artificial intelligence" OR neuroscience)';
   const fieldTerms = fieldLens.id === "all" ? [] : [fieldLens.label, ...fieldLens.terms.slice(0, 3)];
-  const phrases = [...topics.map((topic) => topic.name), ...fieldTerms].map((term) => `"${term}"`);
-  return phrases.length ? `(${phrases.join(" OR ")})` : '("artificial intelligence" OR neuroscience)';
+  const fieldPhrases = fieldTerms.map((term) => `"${term}"`);
+  return fieldPhrases.length ? `${topicFocus} (${fieldPhrases.join(" OR ")})` : topicFocus;
 }
 
-async function fetchTrendNews(topics, days, fieldLens) {
+function containsAnyTerm(text, terms) {
+  const normalized = normalizeText(text).toLowerCase();
+  return terms.some((term) => normalized.includes(term.toLowerCase()));
+}
+
+function newsFocusTerms(topics, fieldLens) {
+  const topicTerms = topics.flatMap((topic) => [topic.name, ...keywordList(topic.query || topic.name).slice(0, 6)]);
+  const fieldTerms = fieldLens.id === "all" ? [] : [fieldLens.label, ...fieldLens.terms];
+  return {
+    topicTerms: [...new Set(topicTerms.filter(Boolean))],
+    fieldTerms: [...new Set(fieldTerms.filter(Boolean))]
+  };
+}
+
+function matchesNewsFocus(item, topics, fieldLens) {
+  const { topicTerms, fieldTerms } = newsFocusTerms(topics, fieldLens);
+  const text = `${item.title} ${item.summary} ${item.source}`;
+  const topicMatch = !topicTerms.length || containsAnyTerm(text, topicTerms);
+  const fieldMatch = !fieldTerms.length || containsAnyTerm(text, fieldTerms);
+  return topicMatch && fieldMatch;
+}
+
+async function fetchTrendNews(topics, days, fieldLens, options = {}) {
   const focus = newsTopicFocus(topics, fieldLens);
   const academiaQuery =
     `${focus} (research OR university OR paper OR lab) -stock -investor -crypto when:${days}d`;
@@ -850,6 +957,7 @@ async function fetchTrendNews(topics, days, fieldLens) {
   const ordered = [...academia, ...industry, ...discussion]
     .filter((item) => item.title && item.url)
     .filter((item) => !isLowValueNews(item))
+    .filter((item) => (options.skipFocusFilter ? true : matchesNewsFocus(item, topics, fieldLens)))
     .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
   return dedupeNews(ordered).slice(0, 18);
 }
@@ -857,9 +965,29 @@ async function fetchTrendNews(topics, days, fieldLens) {
 async function trendNews(topics, fieldLens) {
   const today = await fetchTrendNews(topics, 1, fieldLens);
   if (today.length) {
-    return { items: today, days: 1 };
+    return { items: today, days: 1, scope: "topic_field" };
   }
-  return { items: await fetchTrendNews(topics, 7, fieldLens), days: 7 };
+  const week = await fetchTrendNews(topics, 7, fieldLens);
+  if (week.length) {
+    return { items: week, days: 7, scope: "topic_field" };
+  }
+  const month = await fetchTrendNews(topics, 30, fieldLens);
+  if (month.length) {
+    return { items: month, days: 30, scope: "topic_field" };
+  }
+  if (fieldLens.id !== "all") {
+    const topicOnlyLens = fieldLensFromFields([]);
+    const topicOnlyToday = await fetchTrendNews(topics, 1, topicOnlyLens);
+    if (topicOnlyToday.length) {
+      return { items: topicOnlyToday, days: 1, scope: "topic_fallback" };
+    }
+    const topicOnlyWeek = await fetchTrendNews(topics, 7, topicOnlyLens);
+    if (topicOnlyWeek.length) {
+      return { items: topicOnlyWeek, days: 7, scope: "topic_fallback" };
+    }
+    return { items: await fetchTrendNews(topics, 30, topicOnlyLens), days: 30, scope: "topic_fallback" };
+  }
+  return { items: [], days: 30, scope: "topic_field" };
 }
 
 function mergePapers(paperGroups, topicNames, minSignificance, options = {}) {
@@ -928,9 +1056,7 @@ async function discover(req, res, url) {
   const days = dayWindow === "all" ? "all" : Number.parseInt(dayWindow, 10);
   const allTime = days === "all";
   const minSignificance = Number.parseInt(url.searchParams.get("minSignificance") || "34", 10);
-  const topics = selected.length
-    ? store.topics.filter((topic) => selected.includes(topic.id))
-    : store.topics;
+  const topics = selectedTopics(store, selected);
   const fields = selectedFields(store, selectedFieldIds);
   const fieldLens = fieldLensFromFields(fields);
   const topicNames = topics.map((topic) => topic.name);
@@ -956,13 +1082,16 @@ async function discover(req, res, url) {
       trends: computeTrends(result.papers)
     });
   } catch (error) {
-    const fallback = samplePapers.map((paper) => applyScores(paper, scoreTopicNames));
+    const fallback = samplePapers
+      .filter((paper) => paperMatchesSelection(paper, topics, fieldLens))
+      .map((paper) => applyScores(paper, scoreTopicNames));
+    const emptyRelevantResult = !fallback.length && error.message.includes("No live paper source returned results");
     sendJson(res, 200, {
-      status: "sample",
+      status: emptyRelevantResult ? "empty" : "sample",
       message: error.message,
       updatedAt: new Date().toISOString(),
       minSignificance,
-      rankingMode: "sample",
+      rankingMode: emptyRelevantResult ? "empty" : "sample",
       field: { id: fieldLens.id, label: fieldLens.label },
       topics,
       papers: fallback,
@@ -1088,9 +1217,7 @@ const server = createServer(async (req, res) => {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean);
-        const topics = selected.length
-          ? store.topics.filter((topic) => selected.includes(topic.id))
-          : store.topics;
+        const topics = selectedTopics(store, selected);
         const fieldLens = fieldLensFromFields(selectedFields(store, selectedFieldIds));
         const result = await trendNews(topics, fieldLens);
         sendJson(res, 200, {
@@ -1099,6 +1226,7 @@ const server = createServer(async (req, res) => {
           topics: topics.map((topic) => topic.name),
           field: { id: fieldLens.id, label: fieldLens.label },
           days: result.days,
+          scope: result.scope,
           items: result.items
         });
       } catch (error) {

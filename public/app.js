@@ -192,7 +192,11 @@ function renderFeaturedPapers() {
   featuredPapers.replaceChildren();
   const papers = activePapers().slice(0, 3);
   if (!papers.length) {
-    featuredPapers.innerHTML = `<div class="empty-state">No papers match the ${state.view} view.</div>`;
+    const message =
+      state.rankingMode === "empty"
+        ? `No relevant ${state.view} papers found for this selection.`
+        : `No papers match the ${state.view} view.`;
+    featuredPapers.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
   for (const paper of papers) {
@@ -318,7 +322,11 @@ function renderPapers() {
   paperList.replaceChildren();
   const papers = activePapers();
   if (!papers.length) {
-    paperList.innerHTML = '<div class="empty-state">No papers match this view.</div>';
+    const message =
+      state.rankingMode === "empty"
+        ? "No relevant papers found in the selected window. Try a longer window or correct the field spelling."
+        : "No papers match this view.";
+    paperList.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
   for (const paper of papers) {
@@ -378,10 +386,17 @@ function renderMetrics(payload) {
   paperCount.textContent = state.papers.length;
   trendCount.textContent = state.trends.length;
   newsCount.textContent = state.news.length;
-  sourceStatus.textContent = payload.status === "live" ? (payload.providers || ["OpenAlex"]).join(" + ") : "Sample";
+  sourceStatus.textContent =
+    payload.status === "live"
+      ? (payload.providers || ["OpenAlex"]).join(" + ")
+      : payload.status === "empty"
+      ? "No relevant live papers"
+      : "Sample";
   updatedAt.textContent =
     payload.status === "live"
       ? `Updated ${formatDate(payload.updatedAt)}`
+      : payload.status === "empty"
+      ? `No relevant papers found: ${payload.message || "try a longer window"}`
       : `Sample mode: ${payload.message || "live source unavailable"}`;
 }
 
@@ -429,10 +444,14 @@ async function loadTrendNews(requestId = state.requestId) {
   state.news = payload.items || [];
   newsCount.textContent = state.news.length;
   const topicLabel = payload.topics?.length ? ` for ${payload.topics.join(", ")}` : "";
-  featuredNewsScope.textContent = payload.days === 1 ? "Academia + industry today" : "Academia + industry · 7 days";
+  const fieldLabel = payload.field?.id && payload.field.id !== "all" ? ` · ${payload.field.label}` : "";
+  const fallbackLabel = payload.scope === "topic_fallback" ? " · topic fallback" : "";
+  const newsWindowLabel = payload.days === 1 ? "today" : `${payload.days} days`;
+  featuredNewsScope.textContent =
+    `Academia + industry · ${newsWindowLabel}${fallbackLabel}`;
   newsUpdatedAt.textContent =
     payload.status === "live"
-      ? `${payload.days === 1 ? "Today" : "Last 7 days"}${topicLabel} · updated ${formatDate(payload.updatedAt)}`
+      ? `${payload.days === 1 ? "Today" : `Last ${payload.days} days`}${topicLabel}${fieldLabel}${fallbackLabel} · updated ${formatDate(payload.updatedAt)}`
       : `Sample mode: ${payload.message || "live news unavailable"}`;
   renderNews();
   renderFeaturedNews();
